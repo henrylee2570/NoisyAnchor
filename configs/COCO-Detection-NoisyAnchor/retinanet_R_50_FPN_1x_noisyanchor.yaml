@@ -1,0 +1,21 @@
+_BASE_: "../Base-RetinaNet.yaml"
+MODEL:
+  META_ARCHITECTURE: "RetinaNetNoisy"
+  WEIGHTS: "outputs/R-50.pkl"  # "detectron2://ImageNetPretrained/MSRA/R-50.pkl"
+  RESNETS:
+    DEPTH: 50
+  RETINANET:
+    FOCAL_LOSS_ALPHA: 0.5
+    NOISY:
+      ALPHA: 0.75
+      TOPN: 30
+DATASETS:
+  TRAIN: ("coco_2017_train",)
+  TEST: ("coco_2017_val",)
+SOLVER:
+  IMS_PER_BATCH: 8
+  BASE_LR: 0.005 # Note that RetinaNet uses a different default learning rate
+  STEPS: (120000, 160000)
+  MAX_ITER: 180000
+
+OUTPUT_DIR: "./outputs/retinanet_r50_1x_noisyanchor"

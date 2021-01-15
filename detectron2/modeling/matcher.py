@@ -2,6 +2,7 @@
 from typing import List
 import torch
 
+import pdb
 
 class Matcher(object):
     """
@@ -98,6 +99,96 @@ class Matcher(object):
             self.set_low_quality_matches_(match_labels, match_quality_matrix)
 
         return matches, match_labels
+
+    def set_low_quality_matches_(self, match_labels, match_quality_matrix):
+        """
+        Produce additional matches for predictions that have only low-quality matches.
+        Specifically, for each ground-truth G find the set of predictions that have
+        maximum overlap with it (including ties); for each prediction in that set, if
+        it is unmatched, then match it to the ground-truth G.
+
+        This function implements the RPN assignment case (i) in Sec. 3.1.2 of the
+        Faster R-CNN paper: https://arxiv.org/pdf/1506.01497v3.pdf.
+        """
+        # For each gt, find the prediction with which it has highest quality
+        highest_quality_foreach_gt, _ = match_quality_matrix.max(dim=1)
+        # Find the highest quality match available, even if it is low, including ties.
+        # Note that the matches qualities must be positive due to the use of
+        # `torch.nonzero`.
+        gt_pred_pairs_of_highest_quality = torch.nonzero(
+            match_quality_matrix == highest_quality_foreach_gt[:, None]
+        )
+        # Example gt_pred_pairs_of_highest_quality:
+        #   tensor([[    0, 39796],
+        #           [    1, 32055],
+        #           [    1, 32070],
+        #           [    2, 39190],
+        #           [    2, 40255],
+        #           [    3, 40390],
+        #           [    3, 41455],
+        #           [    4, 45470],
+        #           [    5, 45325],
+        #           [    5, 46390]])
+        # Each row is a (gt index, prediction index)
+        # Note how gt items 1, 2, 3, and 5 each have two ties
+
+        pred_inds_to_update = gt_pred_pairs_of_highest_quality[:, 1]
+        match_labels[pred_inds_to_update] = 1
+
+
+class MatcherTopN(object):
+    """
+    A matcher that selects Top-N most precisely localized candidates (e.g. anchors) 
+    as positive samples, instead of generating the split of positive/negative canditates
+    with the IoU-thresholded ground-truth assignment method. 
+    """
+
+    def __init__(
+        self, topN: int = 30
+    ):
+        """
+        Args: 
+            topN (int): the number of positive candidates for each ground-truth object.
+        """
+        self.topN = topN
+
+    def __call__(self, match_quality_matrix):
+        """
+        Args:
+            match_quality_matrix (Tensor[float]): an MxN tensor, containing the
+                pairwise quality between M ground-truth elements and N predicted
+                elements. All elements must be >= 0 (due to the us of `torch.nonzero`
+                for selecting indices in :meth:`set_low_quality_matches_`).
+
+        Returns:
+            matches (Tensor[int64]): a vector of length N, where matches[i] is a matched
+                ground-truth index in [0, M)
+            match_labels (Tensor[int8]): a vector of length N, where pred_labels[i] indicates
+                whether a prediction is a true or false positive or ignored
+        """
+        assert match_quality_matrix.dim() == 2
+        if match_quality_matrix.numel() == 0:
+            default_matches = match_quality_matrix.new_full(
+                (match_quality_matrix.size(1),), 0, dtype=torch.int64
+            )
+            # When no gt boxes exist, we define IOU = 0 and therefore set labels
+            # to `self.labels[0]`, which usually defaults to background class 0
+            # To choose to ignore instead, can make labels=[-1,0,-1,1] + set appropriate thresholds
+            default_match_labels = match_quality_matrix.new_full(
+                (match_quality_matrix.size(1),), 0, dtype=torch.int8
+            )
+            return default_matches, default_match_labels
+
+        assert torch.all(match_quality_matrix >= 0)
+
+        # Select topN overlapping anchors for each ground-truth object
+        topN_inds = match_quality_matrix.argsort(dim=1)[:, -self.topN:].reshape(-1)
+        matches = match_quality_matrix.argmax(dim=0)
+        match_labels = matches.new_full(matches.size(), 0, dtype=torch.int8)
+
+        match_labels[topN_inds] = 1
+
+        return matches, match_labels, topN_inds
 
     def set_low_quality_matches_(self, match_labels, match_quality_matrix):
         """

@@ -3,3 +3,13 @@ MODEL:
   WEIGHTS: "detectron2://ImageNetPretrained/MSRA/R-50.pkl"
   RESNETS:
     DEPTH: 50
+  RETINANET:
+    FOCAL_LOSS_ALPHA: 0.5
+
+SOLVER:
+  IMS_PER_BATCH: 8 # 16
+  BASE_LR: 0.005 # 0.01  # Note that RetinaNet uses a different default learning rate
+  STEPS: (120000, 160000) # (60000, 80000)
+  MAX_ITER: 180000 # 90000
+
+OUTPUT_DIR: "./output/retinanet_r50_1x_baseline_fl0.5"
