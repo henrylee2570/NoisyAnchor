@@ -177,7 +177,7 @@ class MatcherTopN(object):
             default_match_labels = match_quality_matrix.new_full(
                 (match_quality_matrix.size(1),), 0, dtype=torch.int8
             )
-            return default_matches, default_match_labels
+            return default_matches, default_match_labels, None
 
         assert torch.all(match_quality_matrix >= 0)
 

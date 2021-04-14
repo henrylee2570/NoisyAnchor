@@ -363,6 +363,9 @@ class RetinaNetNoisy(nn.Module):
             match_quality_matrix = pairwise_iou(targets_per_image.gt_boxes, anchors_per_image)
             gt_matched_idxs, anchor_labels, topN_inds = self.matcher(match_quality_matrix)
 
+            soft_labels_this = torch.zeros_like(anchor_labels).float()
+            reweight_coeffs_this = torch.ones_like(anchor_labels).float()
+
             has_gt = len(targets_per_image) > 0
             if has_gt:
                 # ground truth box regression
@@ -374,39 +377,37 @@ class RetinaNetNoisy(nn.Module):
                 gt_classes_i = targets_per_image.gt_classes[gt_matched_idxs]
                 # Anchors with label 0 are treated as background.
                 gt_classes_i[anchor_labels == 0] = self.num_classes
+
+                # get classification confidence of positive anchors
+                cls_conf = torch.sigmoid(pred_class_logits[i].detach())[topN_inds, gt_classes_i[topN_inds].long()]
+
+                # get localization accuracy of positive anchors
+                predicted_boxes_per_image = self.box2box_transform.apply_deltas(pred_anchor_deltas[i].detach(), anchors_per_image.tensor)
+                loc_acc = pairwise_iou(targets_per_image.gt_boxes, Boxes(predicted_boxes_per_image))
+                loc_acc = loc_acc[gt_matched_idxs[topN_inds], topN_inds]
+
+                # Generate soft labels
+                loc_acc_s          =     loc_acc / loc_acc.mean()
+                cls_conf_s         =     cls_conf / cls_conf.mean()
+                soft_labels_pos    =     self.alpha * loc_acc_s + (1 - self.alpha) * cls_conf_s
+                # scaling normalized soft labels back to range [0, 1]
+                # we find bounding soft labels to range [C, 1] (where c > 0) is more stable and easier to tune during training 
+                # here we simply use C = loc_acc.mean()
+                scaling            =     (1.0 - loc_acc.mean()) / (soft_labels_pos.max() - soft_labels_pos.min())
+                soft_labels_pos    =     loc_acc.mean() + (soft_labels_pos - soft_labels_pos.min()) * scaling
+
+                # Generate re-weighting coefficients
+                loc_acc_r          =     1 / (1 - loc_acc) / (1 / (1 - loc_acc)).mean()
+                cls_conf_r         =     1 / (1 - cls_conf) / (1 / (1 - cls_conf)).mean()
+                reweight_coeff_pos =  self.alpha * loc_acc_r + (1 - self.alpha) * cls_conf_r
+
+                soft_labels_this[topN_inds] = soft_labels_pos
+                reweight_coeffs_this[topN_inds] = reweight_coeff_pos
+
             else:
                 gt_classes_i = torch.zeros_like(gt_matched_idxs) + self.num_classes
                 gt_anchors_reg_deltas_i = torch.zeros_like(anchors_per_image.tensor)
-
-            # get classification confidence of positive anchors
-            cls_conf = torch.sigmoid(pred_class_logits[i].detach())[topN_inds, gt_classes_i[topN_inds].long()]
-
-            # get localization accuracy of positive anchors
-            predicted_boxes_per_image = self.box2box_transform.apply_deltas(pred_anchor_deltas[i].detach(), anchors_per_image.tensor)
-            loc_acc = pairwise_iou(targets_per_image.gt_boxes, Boxes(predicted_boxes_per_image))
-            loc_acc = loc_acc[gt_matched_idxs[topN_inds], topN_inds]
-
-            # Generate soft labels
-            loc_acc_s          =     loc_acc / loc_acc.mean()
-            cls_conf_s         =     cls_conf / cls_conf.mean()
-            soft_labels_pos    =     self.alpha * loc_acc_s + (1 - self.alpha) * cls_conf_s
-            # scaling normalized soft labels back to range [0, 1]
-            # we find bounding soft labels to range [C, 1] (where c > 0) is more stable and easier to tune during training 
-            # here we simply use C = loc_acc.mean()
-            scaling            =     (1.0 - loc_acc.mean()) / (soft_labels_pos.max() - soft_labels_pos.min())
-            soft_labels_pos    =     loc_acc.mean() + (soft_labels_pos - soft_labels_pos.min()) * scaling
-
-            # Generate re-weighting coefficients
-            loc_acc_r          =     1 / (1 - loc_acc) / (1 / (1 - loc_acc)).mean()
-            cls_conf_r         =     1 / (1 - cls_conf) / (1 / (1 - cls_conf)).mean()
-            reweight_coeff_pos =  self.alpha * loc_acc_r + (1 - self.alpha) * cls_conf_r
-
-            soft_labels_this = torch.zeros_like(anchor_labels).float()
-            reweight_coeffs_this = torch.ones_like(anchor_labels).float()
-
-            soft_labels_this[topN_inds] = soft_labels_pos
-            reweight_coeffs_this[topN_inds] = reweight_coeff_pos
-
+                
             gt_classes.append(gt_classes_i)
             gt_anchors_deltas.append(gt_anchors_reg_deltas_i)
             soft_labels.append(soft_labels_this)   
